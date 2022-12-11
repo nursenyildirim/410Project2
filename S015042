@@ -1,0 +1,336 @@
+#include <iostream>
+#include <string>
+#include <vector>
+#include <unordered_map>
+#include <fstream>
+#include <sstream>
+
+using namespace std;
+	
+unordered_map<string, vector<string>> rules;
+vector<string> nonTerminal, terminal;
+string s;
+
+/*
+	Read variables from file
+*/
+void ReadFile(string fileName) {
+
+	vector<string> opList = { "NON-TERMINAL","TERMINAL","RULES","START" };
+	ifstream f;
+	string op, in;
+
+	f.open(fileName);
+	//Reading file
+	while (getline(f, in)) {
+		//Setting operation
+		if (find(begin(opList), end(opList), in) != end(opList)) { op = in; continue; }
+
+		//Setting rules, and non-terminal/terminal/start symbols;
+		if (op == "NON-TERMINAL") {
+			nonTerminal.push_back(in);
+		}
+		else if (op == "TERMINAL") {
+			terminal.push_back(in);
+		}
+		else if (op == "RULES") {
+			string lhs;
+			string rhs;
+			stringstream temp(in);
+			getline(temp, in, ':');
+			lhs = in;
+			getline(temp, in, ':');
+			rhs = in;
+			if (rules.find(lhs) != end(rules)) {
+				rules[lhs].push_back(rhs);
+			}
+			else {
+				rules[lhs] = { rhs };
+			}
+		}
+		else if (op == "START") {
+			s = in;
+		}
+	}
+	f.close();
+}
+
+void FindAndRemoveRule(vector<string>& rules, string& rule) {
+	rules.erase(find(begin(rules), end(rules), rule));
+}
+
+void RecursivelyGenerateRules(string rule, string symbol, vector<string>& newRules, vector<string>& rules, int depth) {
+	string tmp = rule;
+	bool found = false;
+	for (size_t i = 0; i < rule.length(); i++) {
+		if (rule.substr(i,1) == symbol) {
+			tmp.erase(i,1);
+			if (tmp == "") tmp = "e";
+			if (find(begin(newRules), end(newRules), tmp) == end(newRules) && find(begin(rules), end(rules), tmp) == end(rules)) {
+				newRules.push_back(tmp);
+				found = true;
+			}
+			tmp = rule;		
+		}
+	}
+
+	if (found)
+		for (auto& r : newRules)
+			RecursivelyGenerateRules(r, symbol, newRules, rules, depth + 1);
+
+	if (depth == 0) rules.insert(end(rules), begin(newRules), end(newRules));
+
+}
+
+void ReplaceCurrentSymbolInAllRules(string symbol) {
+	for (auto& rule : rules) {
+		vector<string> tmp;
+		size_t rs = rule.second.size();
+		for (size_t i = 0; i < rs;i++) {
+			string rhs = rule.second[i];
+			if (rhs.find(symbol) != string::npos) {
+				RecursivelyGenerateRules(rhs, symbol, tmp, rule.second, 0);
+			}		
+		}
+		
+	}
+}
+
+string GetNonTerminal(string newRule) {
+	for (auto& rule : rules) {
+		for(auto& rhs : rule.second){
+			if (rhs == newRule && rule.second.size() == 1) {
+				return rule.first;
+			}
+		}
+	}
+	return "";
+}
+
+/*
+	Print the rules. Format:
+	S -> a | AB | B
+	B -> ..
+*/
+void PrintRules() {
+	for (auto& rule : rules) {
+		cout << rule.first << " -> ";
+		for (size_t i = 0; i < rule.second.size(); i++) {
+			cout << rule.second[i];
+			if (i == rule.second.size() - 1) cout << endl;
+			else cout << " | ";
+		}
+	}
+}
+
+/*
+	If the initial start symbol exists in rules (rhs)
+	Create a new start symbol
+*/
+void EliminateStartRhs() {
+	for (auto& rule : rules)
+		for (auto& rhs : rule.second)
+			if (rhs.find(s) != string::npos) {
+				auto temp = s;
+				rules[s.append("'")] = { temp };
+				nonTerminal.push_back(s);
+				return;
+			}
+}
+
+/*
+	Remove epsilon rules except for the start symbol
+*/
+void EliminateNull() {
+	for (size_t i = 0; i < rules.size(); i++) {
+		for (auto& rule : rules) {
+			if (rule.first == s) continue;				//skip the starting symbol
+			for (auto& rhs : rule.second){
+				if (rhs.find('e') != string::npos) {	//found the epsilon
+					FindAndRemoveRule(rule.second, rhs);
+					ReplaceCurrentSymbolInAllRules(rule.first);
+				}
+			}
+		}
+	}
+}
+
+/*
+	Remove unit rules
+	E.g. A -> B
+*/
+void EliminateUnit() {
+	bool checkUnit = true;
+	while (checkUnit) {
+		checkUnit = false;
+		for (auto& rule : rules) {
+			vector<string> tmp;
+			for (auto& rhs : rule.second) {
+				if (rhs.length() == 1 && find(begin(nonTerminal), end(nonTerminal), rhs) != end(nonTerminal)) {
+					if (rhs != rule.first) {
+						for (auto& r : rules[rhs]) {
+							// if new rule to be added doesn't already exist in current rhs and tmp
+							if (find(begin(tmp), end(tmp), r) == end(tmp) && find(begin(rule.second),end(rule.second),r) == end(rule.second)) {
+								tmp.push_back(r);
+							}
+						}
+					}		
+					FindAndRemoveRule(rule.second, rhs);
+					checkUnit = true;
+				}
+			}
+			rules[rule.first].insert(end(rules[rule.first]), begin(tmp), end(tmp));
+		}	
+	}
+}
+
+/*
+	Split rules that are longer than 2
+	E.g. A -> aBB	=>	A-> aC, C->BB
+*/
+void SplitRules() {
+	bool checkSplit = true;
+	while (checkSplit) {
+		checkSplit = false;
+		for (auto& rule : rules) {
+			for (auto& rhs : rule.second) {
+				if (rhs.length() > 2) {
+					string newRule = rhs.substr(rhs.length() - 2, 2);
+					string newNonTerminal = GetNonTerminal(newRule);
+					if (newNonTerminal == "") {
+						newNonTerminal = "X";
+						while (find(begin(nonTerminal), end(nonTerminal), newNonTerminal) != end(nonTerminal) && newNonTerminal > "A") {
+							newNonTerminal[0]--;
+						}
+						nonTerminal.push_back(newNonTerminal);
+						rules[newNonTerminal] = { newRule };
+					}
+					rhs.replace(begin(rhs) + rhs.length() - 2, end(rhs), newNonTerminal);
+					checkSplit = true;
+				}
+			}
+		}
+	}
+	
+}
+
+/*
+	Replace terminals that exist in rules with lenght 2
+	E.g. A-> aB	=>	-> A-> CB, C-> a 
+*/
+void ReplaceTerminals() {
+	bool checkTerminal = true;
+	while (checkTerminal) {
+		checkTerminal = false;
+		for (auto& rule : rules) {			
+			for (auto& rhs : rule.second) {
+				//find terminals that are not alone
+				if (rhs.length() < 2) continue;	//skip rules that contains less than length less than 2	since they already sadisfy rules e.g S -> a
+				
+				for (size_t i = 0; i < rhs.length(); i++) {
+					//if terminal exists in rule
+					if (find(begin(terminal), end(terminal), rhs.substr(i,1)) != end(terminal)) {
+						//check if terminal exists in another rule
+						string newRule = rhs.substr(i,1);
+						string newNonTerminal = GetNonTerminal(newRule);
+						if (newNonTerminal == "") {
+							newNonTerminal = "X";
+							while (find(begin(nonTerminal), end(nonTerminal), newNonTerminal) != end(nonTerminal) && newNonTerminal > "A") {
+								newNonTerminal[0]--;
+							}
+							nonTerminal.push_back(newNonTerminal);
+							rules[newNonTerminal] = { newRule };
+							checkTerminal = true;
+						}
+						rhs.replace(begin(rhs) + i, begin(rhs) + i+1, newNonTerminal);						
+					}		
+				}
+			}
+		}
+	}
+}
+
+
+void Report() {
+	rules.clear();
+	nonTerminal.clear();
+	terminal.clear();
+	s.clear();
+	cout << "INTRODUCTION";
+	cout << "\nChomsky Normal Form has 3 main rules\n"
+		<< "\t1) A->BC where A, B, and C are non-terminals,and B and C are not start variable\n"
+		<< "\t2) A->a where A is non-terminal and a is terminal\n"
+		<< "\t3) S->e where S is non-terminal start variable\n";
+
+	cout << "\nALGORITHM\n";
+
+	cout << "Reading the file. Using map structure to hold rules.\n"
+		<< "Map uses sting as key, and vector of strigs as value \n"
+		<< "Key and values correspond to lhs and rhs of a rule \n"
+		<< "First, input S:00F split into 2 strings using \':\' as the delimiter.\n"
+		<< "After checking if non-terminal exists in map or not, map entry is either created or updated.\n"
+		<< "Rules after reading the file:\n";
+	ReadFile("input.txt");
+	PrintRules();
+
+	cout << "After mapping the rules;\n"
+		<< "Step 1:\n"
+		<< "\tThis step is to sadisfy rule number 1 of the CNF\n"
+		<< "\tCheck if starting non - terminal exist in rhs\n"
+		<< "\tIf it does, create a new non-terminal and make it the starting node\n";
+	EliminateStartRhs();
+	PrintRules();
+
+	cout << "Step 2:\n"
+		<< "\tThis step is to sadisfy rule number 3 of the CNF\n"
+		<< "\tCheck if epsilon(or null) exists in rules other than starting non - terminal\n"
+		<< "\tIf it does, remove epsilon from rhs until it's completely eliminated or only exists in starting rule\n";
+	EliminateNull();
+	PrintRules();
+
+	cout << "Step 3:\n"
+		<< "\tThis step is to sadisfy rule number 2 of the CNF\n"
+		<< "\tCheck if there is any unit rules\n"
+		<< "\tIf it does, replace the rhs\n"
+		<< "\te.g. A -> B, B->a  => A->a, B->a\n";
+	EliminateUnit();
+	PrintRules();
+
+	cout << "Step 4:\n"
+		<< "\tThis step is to sadisfy rule number 1 of the CNF\n"
+		<< "\tCheck if there is any rule that's longer than 2\n"
+		<< "\tIf there is, create a new rule or use an existing rule to replace it\n"
+		<< "\te.g. A -> aBB, C->aBB  => A->aD, C->aD, D->BB\n";
+	SplitRules();
+	PrintRules();
+
+	cout << "Step 5:\n"
+		<< "\tThis step is to sadisfy rule number 1 of the CNF\n"
+		<< "\tCheck if there is any rule that has terminal and nonterminal variables in it\n"
+		<< "\tIf there is, create a new rule and replace the terminal\n"
+		<< "\te.g. A -> aB, B->b  => A->CB, B->b, C->a\n";
+	ReplaceTerminals();
+	PrintRules();
+}
+
+void CFGToCNF() {
+	rules.clear();
+	nonTerminal.clear();
+	terminal.clear();
+	s.clear();
+	ReadFile("input.txt");
+	EliminateStartRhs();
+	EliminateNull();
+	EliminateUnit();
+	SplitRules();
+	ReplaceTerminals();
+	PrintRules();
+}
+
+
+int main()
+{
+	//Report(); //to print report
+	CFGToCNF();
+}
+
